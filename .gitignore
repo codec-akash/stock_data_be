@@ -1,0 +1,5 @@
+.env
+node_modules/
+package-lock.json
+Large-deals-BULK-10-Dec-2024.csv
+uploads/
