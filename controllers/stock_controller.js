@@ -226,3 +226,24 @@ exports.getStocks = async (req, res) => {
         });
     }
 };
+
+exports.getFilters = async (req, res) => {
+    try {
+
+        const stockName = await Stock.findAll({ attributes: ['symbol', 'securityName'], group: ['symbol', 'securityName'] })
+
+        const uniqueClientNames = await Stock.findAll({
+            attributes: [[sequelize.fn('DISTINCT', sequelize.col('clientName')), 'clientName']]
+        });
+
+        res.status(200).json({
+            stockName: stockName.map(symbol => ({ symbol: symbol.symbol, security: symbol.securityName })),
+            uniqueClientNames: uniqueClientNames.map(client => client.clientName)
+        });
+    } catch (error) {
+        res.status(500).json({
+            error: 'Error fetching filters',
+            details: error.message
+        });
+    }
+};
