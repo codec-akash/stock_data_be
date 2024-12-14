@@ -1,6 +1,7 @@
 const express = require('express');
 const sequelize = require('./config/database');
 const stockRoutes = require('./routes/stock_routes');
+const userRoutes = require('./routes/user_routes');
 const fs = require('fs');
 const app = express();
 
@@ -27,6 +28,7 @@ initDatabase();
 
 // Routes
 app.use('/api/stocks', stockRoutes);
+app.use('/api/user', userRoutes);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

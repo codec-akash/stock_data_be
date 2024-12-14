@@ -4,7 +4,7 @@ const Stock = require('../models/stock');
 const sequelize = require('../config/database');
 
 const validateSortField = (field) => {
-    const allowedFields = ['date', 'symbol', 'securityName', 'clientName', 'buyOrSell', 'quantityTraded', 'tradePrice'];
+    const allowedFields = ['date', 'symbol', 'securityName', 'clientName', 'tradeType', 'quantityTraded', 'tradePrice'];
     return allowedFields.includes(field) ? field : 'date';
 };
 
@@ -60,20 +60,20 @@ exports.uploadCSV = async (req, res) => {
                         symbol: data.symbol?.trim(),
                         securityName: data.security_name?.trim(),
                         clientName: data.client_name?.trim(),
-                        buyOrSell: data.buy_sell?.trim(),
+                        tradeType: data.buy_sell?.trim(),
                         quantityTraded: parseInt((data.quantity_traded || '').replace(/,/g, '')),
                         tradePrice: parseFloat(data.trade_price),
                         remarks: data.remarks?.trim()
                     };
 
-                    if (transformedData.symbol && transformedData.securityName && transformedData.clientName && transformedData.buyOrSell) {
+                    if (transformedData.symbol && transformedData.securityName && transformedData.clientName && transformedData.tradeType) {
                         // Check for duplicate before pushing to results
                         const existingRecord = await Stock.findOne({
                             where: {
                                 date: transformedData.date,
                                 symbol: transformedData.symbol,
                                 clientName: transformedData.clientName,
-                                buyOrSell: transformedData.buyOrSell,
+                                tradeType: transformedData.tradeType,
                                 quantityTraded: transformedData.quantityTraded,
                                 tradePrice: transformedData.tradePrice
                             },
@@ -168,7 +168,7 @@ exports.getStocks = async (req, res) => {
         const validFilters = {
             symbol: req.query.symbol,
             clientName: req.query.clientName,
-            buyOrSell: req.query.buyOrSell,
+            tradeType: req.query.tradeType,
             date: req.query.date,
             securityName: req.query.securityName
         };

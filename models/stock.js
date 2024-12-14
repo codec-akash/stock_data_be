@@ -18,7 +18,7 @@ const Stock = sequelize.define('stocks', {
         type: DataTypes.STRING,
         allowNull: false
     },
-    buyOrSell: {
+    tradeType: {
         type: DataTypes.STRING,
         allowNull: false
     },

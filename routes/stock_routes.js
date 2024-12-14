@@ -45,8 +45,8 @@ router.use((error, req, res, next) => {
 });
 
 // Add this new route along with your existing routes
-router.get('/', stockController.getStocks);
+router.get('/deals', stockController.getStocks);
 
-router.get('/filter/', stockController.getFilters);
+router.get('/filters', stockController.getFilters);
 
 module.exports = router;
