@@ -2,6 +2,9 @@ const fs = require('fs');
 const csv = require('csv-parser');
 const Stock = require('../models/stock');
 const sequelize = require('../config/database');
+const { Op } = require('sequelize');
+const e = require('express');
+const moment = require('moment-timezone');
 
 const validateSortField = (field) => {
     const allowedFields = ['date', 'symbol', 'securityName', 'clientName', 'tradeType', 'quantityTraded', 'tradePrice'];
@@ -10,12 +13,15 @@ const validateSortField = (field) => {
 
 const validateDateFormat = (dateString) => {
     const date = new Date(dateString);
-    return date instanceof Date && !isNaN(date) ? date : null;
+    if (date instanceof Date && !isNaN(date)) {
+        // Convert to IST (UTC+5:30)
+        date.setMinutes(date.getMinutes() + 330);
+        return date;
+    }
+    return null;
 };
 
 exports.uploadCSV = async (req, res) => {
-    const transaction = await sequelize.transaction();
-
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
@@ -23,8 +29,9 @@ exports.uploadCSV = async (req, res) => {
 
         const results = [];
         const duplicates = [];
+        let processedCount = 0;
 
-        // Process CSV file
+        // First, process CSV file and collect all data
         await new Promise((resolve, reject) => {
             fs.createReadStream(req.file.path)
                 .pipe(csv({
@@ -35,8 +42,8 @@ exports.uploadCSV = async (req, res) => {
                     strict: true,
                     trim: true
                 }))
-                .on('data', async (data) => {
-
+                .on('data', (data) => {
+                    processedCount++;
                     const isEmptyRow = Object.values(data).every(value =>
                         !value || value.toString().trim() === '');
 
@@ -55,8 +62,24 @@ exports.uploadCSV = async (req, res) => {
                     findAndMapKey(data, 'Trade Price', 'trade_price');
                     findAndMapKey(data, 'Remarks', 'remarks');
 
+                    // Parse date properly
+                    let parsedDate;
+                    try {
+                        parsedDate = new Date(data.date);
+                        // Convert to IST (UTC+5:30)
+                        parsedDate.setMinutes(parsedDate.getMinutes() + 330);
+                        if (isNaN(parsedDate.getTime())) {
+                            // Try parsing DD-MMM-YYYY format
+                            const [day, month, year] = data.date.split('-');
+                            parsedDate = new Date(`${month} ${day}, ${year}`);
+                        }
+                    } catch (error) {
+                        console.error('Date parsing error:', error);
+                        return;
+                    }
+
                     const transformedData = {
-                        date: data.date,
+                        date: parsedDate.toISOString().split('T')[0],
                         symbol: data.symbol?.trim(),
                         securityName: data.security_name?.trim(),
                         clientName: data.client_name?.trim(),
@@ -66,66 +89,130 @@ exports.uploadCSV = async (req, res) => {
                         remarks: data.remarks?.trim()
                     };
 
-                    if (transformedData.symbol && transformedData.securityName && transformedData.clientName && transformedData.tradeType) {
-                        // Check for duplicate before pushing to results
-                        const existingRecord = await Stock.findOne({
-                            where: {
-                                date: transformedData.date,
-                                symbol: transformedData.symbol,
-                                clientName: transformedData.clientName,
-                                tradeType: transformedData.tradeType,
-                                quantityTraded: transformedData.quantityTraded,
-                                tradePrice: transformedData.tradePrice
-                            },
-                            transaction
-                        });
-
-                        if (existingRecord) {
-                            duplicates.push({
-                                ...transformedData,
-                                reason: 'Duplicate entry found'
-                            });
-                        } else {
-                            results.push(transformedData);
-                        }
+                    if (transformedData.symbol && transformedData.securityName &&
+                        transformedData.clientName && transformedData.tradeType &&
+                        !isNaN(transformedData.quantityTraded) &&
+                        !isNaN(transformedData.tradePrice) &&
+                        transformedData.date) {
+                        results.push(transformedData);
                     } else {
-                        console.log('Skipping row with missing required fields:', transformedData);
+                        console.log('Skipping row with missing or invalid fields:', transformedData);
                     }
                 })
-                .on('end', () => {
-                    resolve();
-                })
-                .on('error', (error) => {
-                    console.error('Error processing CSV:', error);
-                    reject(error);
-                });
+                .on('end', resolve)
+                .on('error', reject);
         });
 
-        // Bulk insert only non-duplicate data
-        if (results.length > 0) {
-            await Stock.bulkCreate(results, {
-                transaction,
-                validate: true
+        console.log(`Total rows processed: ${processedCount}`);
+        console.log(`Valid rows collected: ${results.length}`);
+
+        // Then, process the collected data with transaction
+        const transaction = await sequelize.transaction();
+        try {
+            // First get all existing records
+            const allExistingRecords = await Stock.findAll({
+                attributes: ['date', 'symbol', 'clientName', 'tradeType', 'quantityTraded', 'tradePrice'],
+                raw: true,
+                transaction
             });
+
+            console.log('Total existing records:', allExistingRecords.length);
+
+            // Create a Set of existing record keys for faster lookup
+            const existingSet = new Set();
+            allExistingRecords.forEach(record => {
+                const key = `${record.date}-${record.symbol}-${record.clientName}-${record.tradeType}-${record.quantityTraded}-${record.tradePrice}`;
+                existingSet.add(key);
+            });
+
+            console.log('Unique keys in database:', existingSet.size);
+
+            // Debug: Log a few existing keys
+            console.log('Sample existing keys:', Array.from(existingSet).slice(0, 5));
+
+            // Filter out duplicates from results
+            const uniqueResults = [];
+            const seenKeys = new Set(); // Track keys within current batch
+
+            results.forEach(data => {
+                const key = `${data.date}-${data.symbol}-${data.clientName}-${data.tradeType}-${data.quantityTraded}-${data.tradePrice}`;
+
+                // Debug log for sample records
+                if (results.indexOf(data) < 5) {
+                    console.log('Processing record:', {
+                        key,
+                        existsInDB: existingSet.has(key),
+                        existsInBatch: seenKeys.has(key),
+                        data
+                    });
+                }
+
+                if (existingSet.has(key)) {
+                    duplicates.push({
+                        ...data,
+                        reason: 'Duplicate entry found in database'
+                    });
+                } else if (seenKeys.has(key)) {
+                    duplicates.push({
+                        ...data,
+                        reason: 'Duplicate entry in current batch'
+                    });
+                } else {
+                    uniqueResults.push(data);
+                    seenKeys.add(key);
+                }
+            });
+
+            console.log('Unique keys in current batch:', seenKeys.size);
+            console.log('Unique records to insert:', uniqueResults.length);
+            console.log('Duplicates found:', duplicates.length);
+
+            // Add detailed counts in response
+            const duplicatesByReason = duplicates.reduce((acc, curr) => {
+                acc[curr.reason] = (acc[curr.reason] || 0) + 1;
+                return acc;
+            }, {});
+
+            // Bulk insert only non-duplicate data
+            if (uniqueResults.length > 0) {
+                const chunkSize = 1000;
+                for (let i = 0; i < uniqueResults.length; i += chunkSize) {
+                    const chunk = uniqueResults.slice(i, i + chunkSize);
+                    await Stock.bulkCreate(chunk, {
+                        transaction,
+                        validate: true
+                    });
+                    console.log(`Inserted ${i + chunk.length} of ${uniqueResults.length} records`);
+                }
+            }
+
+            await transaction.commit();
+            fs.unlinkSync(req.file.path);
+
+            res.status(200).json({
+                message: 'CSV file successfully processed',
+                recordsImported: uniqueResults.length,
+                duplicatesSkipped: duplicates.length,
+                duplicatesByReason,
+                totalProcessed: processedCount,
+                databaseStats: {
+                    existingRecordsCount: allExistingRecords.length,
+                    uniqueKeysInDB: existingSet.size
+                },
+                sampleData: {
+                    existingRecords: allExistingRecords.slice(0, 3),
+                    duplicates: duplicates.slice(0, 3),
+                    uniqueResults: uniqueResults.slice(0, 3)
+                }
+            });
+
+        } catch (error) {
+            await transaction.rollback();
+            throw error;
         }
-
-        // Commit transaction
-        await transaction.commit();
-
-        // Delete the uploaded file
-        fs.unlinkSync(req.file.path);
-
-        res.status(200).json({
-            message: 'CSV file successfully processed',
-            recordsImported: results.length,
-            duplicatesSkipped: duplicates.length,
-            duplicateRecords: duplicates
-        });
 
     } catch (error) {
         console.error('Error:', error);
-        // Rollback transaction on error
-        await transaction.rollback();
 
         // Delete the uploaded file if it exists
         if (req.file && fs.existsSync(req.file.path)) {
@@ -170,7 +257,8 @@ exports.getStocks = async (req, res) => {
             clientName: req.query.clientName,
             tradeType: req.query.tradeType,
             date: req.query.date,
-            securityName: req.query.securityName
+            securityName: req.query.securityName,
+            executedAt: req.query['executedAt.values']
         };
 
         // Build filter conditions
@@ -180,6 +268,17 @@ exports.getStocks = async (req, res) => {
                     const validDate = validateDateFormat(value);
                     if (validDate) {
                         filters[key] = validDate;
+                    }
+                } else if (key === 'executedAt') {
+                    const dates = value.split(',');
+                    if (dates.length === 2) {
+                        const startDate = validateDateFormat(dates[0]);
+                        const endDate = validateDateFormat(dates[1]);
+                        if (startDate && endDate) {
+                            filters['date'] = {
+                                [sequelize.Op.between]: [startDate, endDate]
+                            };
+                        }
                     }
                 } else {
                     // Case-insensitive partial match for string fields
@@ -247,3 +346,5 @@ exports.getFilters = async (req, res) => {
         });
     }
 };
+
+exports.validateDateFormat = validateDateFormat;
