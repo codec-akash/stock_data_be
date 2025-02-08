@@ -4,7 +4,7 @@ const Stock = require('../models/stock');
 const sequelize = require('../config/database');
 const { Op } = require('sequelize');
 const e = require('express');
-const moment = require('moment-timezone');
+
 
 const validateSortField = (field) => {
     const allowedFields = ['date', 'symbol', 'securityName', 'clientName', 'tradeType', 'quantityTraded', 'tradePrice'];
@@ -346,5 +346,3 @@ exports.getFilters = async (req, res) => {
         });
     }
 };
-
-exports.validateDateFormat = validateDateFormat;
