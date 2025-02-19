@@ -4,7 +4,22 @@ const Stock = require('../models/stock');
 const sequelize = require('../config/database');
 const { Op } = require('sequelize');
 const e = require('express');
+const express = require('express');
+const app = express();
 
+// Add these configurations before routes
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({
+    extended: true,
+    limit: '10mb'
+}));
+
+// Increase timeout
+app.use((req, res, next) => {
+    req.setTimeout(300000); // 5 minutes
+    res.setTimeout(300000);
+    next();
+});
 
 const validateSortField = (field) => {
     const allowedFields = ['date', 'symbol', 'securityName', 'clientName', 'tradeType', 'quantityTraded', 'tradePrice'];
