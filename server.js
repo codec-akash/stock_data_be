@@ -26,6 +26,10 @@ async function initDatabase() {
 
 initDatabase();
 
+app.get('/', (req, res) => {
+    res.send('Nothing to see here. Move along.');
+});
+
 // Routes
 app.use('/api/stocks', stockRoutes);
 app.use('/api/user', userRoutes);
