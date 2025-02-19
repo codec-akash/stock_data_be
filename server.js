@@ -30,6 +30,10 @@ app.get('/', (req, res) => {
     res.send('Nothing to see here. Move along.');
 });
 
+
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+
 // Routes
 app.use('/api/stocks', stockRoutes);
 app.use('/api/user', userRoutes);
