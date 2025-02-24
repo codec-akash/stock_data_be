@@ -100,7 +100,7 @@ exports.uploadCSV = async (req, res) => {
                         clientName: data.client_name?.trim(),
                         tradeType: data.buy_sell?.trim(),
                         quantityTraded: parseInt((data.quantity_traded || '').replace(/,/g, '')),
-                        tradePrice: parseFloat(data.trade_price),
+                        tradePrice: parseFloat((data.trade_price || '').replace(/,/g, '')),
                         remarks: data.remarks?.trim()
                     };
 
