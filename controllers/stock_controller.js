@@ -343,18 +343,32 @@ exports.getStocks = async (req, res) => {
 
 exports.getFilters = async (req, res) => {
     try {
+        // Get unique stock symbols and security names
+        const stocks = await Stock.findAll({
+            attributes: ['symbol', 'securityName'],
+            group: ['symbol', 'securityName']
+        });
 
-        const stockName = await Stock.findAll({ attributes: ['symbol', 'securityName'], group: ['symbol', 'securityName'] })
-
+        // Get unique client names
         const uniqueClientNames = await Stock.findAll({
             attributes: [[sequelize.fn('DISTINCT', sequelize.col('clientName')), 'clientName']]
         });
 
+        // Get unique trade types
+        const uniqueTradeTypes = await Stock.findAll({
+            attributes: [[sequelize.fn('DISTINCT', sequelize.col('tradeType')), 'tradeType']]
+        });
+
         res.status(200).json({
-            stockName: stockName.map(symbol => ({ symbol: symbol.symbol, security: symbol.securityName })),
-            uniqueClientNames: uniqueClientNames.map(client => client.clientName)
+            clientName: uniqueClientNames.map(client => client.clientName),
+            stocks: stocks.map(stock => ({
+                symbol: stock.symbol,
+                securityName: stock.securityName
+            })),
+            tradeType: uniqueTradeTypes.map(type => type.tradeType)
         });
     } catch (error) {
+        console.error('Error fetching filters:', error);
         res.status(500).json({
             error: 'Error fetching filters',
             details: error.message
