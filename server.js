@@ -38,6 +38,11 @@ app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 app.use('/api/stocks', stockRoutes);
 app.use('/api/user', userRoutes);
 
+// 404 handler for routes that don't exist
+app.use((req, res) => {
+    res.status(404).json({ error: "You are lost" });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server is running on port ${PORT}`);
