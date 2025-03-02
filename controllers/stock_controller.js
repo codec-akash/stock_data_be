@@ -258,12 +258,10 @@ exports.getStocks = async (req, res) => {
     try {
         // Pagination params
         const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 20;
-        const offset = (page - 1) * limit;
 
-        // Sorting params
-        const sortField = validateSortField(req.query.sortBy);
-        const sortOrder = req.query.sortOrder?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+        // Sorting params for items within the same date
+        const innerSortField = validateSortField(req.query.sortBy) || 'symbol';
+        const innerSortOrder = req.query.sortOrder?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
         // Filtering params
         const filters = {};
@@ -271,62 +269,73 @@ exports.getStocks = async (req, res) => {
             symbol: req.query.symbol,
             clientName: req.query.clientName,
             tradeType: req.query.tradeType,
-            date: req.query.date,
-            securityName: req.query.securityName,
-            executedAt: req.query['executedAt.values']
+            securityName: req.query.securityName
         };
 
         // Build filter conditions
         Object.entries(validFilters).forEach(([key, value]) => {
             if (value) {
-                if (key === 'date') {
-                    const validDate = validateDateFormat(value);
-                    if (validDate) {
-                        filters[key] = validDate;
-                    }
-                } else if (key === 'executedAt') {
-                    const dates = value.split(',');
-                    if (dates.length === 2) {
-                        const startDate = validateDateFormat(dates[0]);
-                        const endDate = validateDateFormat(dates[1]);
-                        if (startDate && endDate) {
-                            filters['date'] = {
-                                [sequelize.Op.between]: [startDate, endDate]
-                            };
-                        }
-                    }
-                } else {
-                    // Case-insensitive partial match for string fields
-                    filters[key] = sequelize.where(
-                        sequelize.fn('LOWER', sequelize.col(key)),
-                        'LIKE',
-                        `%${value.toLowerCase()}%`
-                    );
-                }
+                filters[key] = sequelize.where(
+                    sequelize.fn('LOWER', sequelize.col(key)),
+                    'LIKE',
+                    `%${value.toLowerCase()}%`
+                );
             }
         });
 
-        // Get data with filters and sorting
-        const { count, rows } = await Stock.findAndCountAll({
-            where: filters,
-            limit: limit,
-            offset: offset,
-            order: [[sortField, sortOrder]],
+        // First, get all unique dates in descending order
+        const uniqueDates = await Stock.findAll({
+            attributes: [[sequelize.fn('DISTINCT', sequelize.col('date')), 'date']],
+            order: [['date', 'DESC']],
+            raw: true
         });
 
-        // Calculate pagination info
-        const totalPages = Math.ceil(count / limit);
+        const totalPages = uniqueDates.length;
+        
+        // If no data found
+        if (totalPages === 0) {
+            return res.status(200).json({
+                currentPage: page,
+                totalPages: 0,
+                totalItems: 0,
+                itemsPerPage: 0,
+                data: [],
+                hasNextPage: false,
+                hasPreviousPage: false,
+                currentDate: null
+            });
+        }
+
+        // Get the date for the requested page
+        const pageIndex = page - 1;
+        if (pageIndex >= totalPages) {
+            return res.status(400).json({
+                error: 'Page number exceeds available dates'
+            });
+        }
+
+        const currentDate = uniqueDates[pageIndex].date;
+
+        // Get all stocks for the current date with filters
+        const { count, rows } = await Stock.findAndCountAll({
+            where: {
+                ...filters,
+                date: currentDate
+            },
+            order: [[innerSortField, innerSortOrder]],
+        });
 
         res.status(200).json({
             currentPage: page,
             totalPages: totalPages,
             totalItems: count,
-            itemsPerPage: limit,
+            itemsPerPage: count, // All items for the current date
             data: rows,
             hasNextPage: page < totalPages,
             hasPreviousPage: page > 1,
-            sortBy: sortField,
-            sortOrder: sortOrder,
+            currentDate: currentDate,
+            sortBy: innerSortField,
+            sortOrder: innerSortOrder,
             appliedFilters: Object.entries(validFilters)
                 .filter(([_, value]) => value !== undefined)
                 .reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {})
