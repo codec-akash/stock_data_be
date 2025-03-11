@@ -50,4 +50,10 @@ router.get('/deals', stockController.getStocks);
 
 router.get('/filters', stockController.getFilters);
 
+// Add route for long-term holdings
+router.get('/long-term-holdings', stockController.getLongTermHoldings);
+
+// Add route to initialize long-term holdings from existing stocks
+router.post('/initialize-long-term-holdings', stockController.initializeLongTermHoldings);
+
 module.exports = router;

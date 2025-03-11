@@ -1,6 +1,7 @@
 const fs = require('fs');
 const csv = require('csv-parser');
 const Stock = require('../models/stock');
+const { LongTermHolding, InitializationStatus } = require('../models/long_term_holding');
 const sequelize = require('../config/database');
 const { Op } = require('sequelize');
 const e = require('express');
@@ -35,6 +36,139 @@ const validateDateFormat = (dateString) => {
     }
     return null;
 };
+
+async function updateLongTermHoldings(transaction, newStocks) {
+    // Group stocks by date for processing
+    const stocksByDate = newStocks.reduce((acc, stock) => {
+        const date = stock.date;
+        if (!acc[date]) {
+            acc[date] = [];
+        }
+        acc[date].push(stock);
+        return acc;
+    }, {});
+
+    // Process each date in chronological order
+    const dates = Object.keys(stocksByDate).sort();
+    
+    for (const date of dates) {
+        const dayStocks = stocksByDate[date];
+        
+        // Group same-day transactions by client and symbol
+        const sameDayTrades = {};
+        
+        // Process all transactions for the day
+        for (const stock of dayStocks) {
+            const key = `${stock.clientName}-${stock.symbol}`;
+            if (!sameDayTrades[key]) {
+                sameDayTrades[key] = {
+                    buys: [],
+                    sells: []
+                };
+            }
+            
+            if (stock.tradeType.toLowerCase() === 'buy') {
+                sameDayTrades[key].buys.push(stock);
+            } else {
+                sameDayTrades[key].sells.push(stock);
+            }
+        }
+
+        // Process each client-symbol pair
+        for (const [key, trades] of Object.entries(sameDayTrades)) {
+            const [clientName, symbol] = key.split('-');
+            
+            // Skip if both buy and sell on same day (short-term trade)
+            if (trades.buys.length > 0 && trades.sells.length > 0) {
+                continue;
+            }
+
+            // Process buys
+            if (trades.buys.length > 0) {
+                const totalQuantity = trades.buys.reduce((sum, trade) => sum + trade.quantityTraded, 0);
+                const averagePrice = trades.buys.reduce((sum, trade) => 
+                    sum + (trade.quantityTraded * trade.tradePrice), 0) / totalQuantity;
+
+                // Find or create holding
+                let holding = await LongTermHolding.findOne({
+                    where: {
+                        clientName,
+                        symbol,
+                        status: 'HOLDING'
+                    },
+                    transaction
+                });
+
+                if (holding) {
+                    // Update existing holding
+                    const newTotalQuantity = holding.quantity + totalQuantity;
+                    const newAveragePrice = ((holding.quantity * holding.averageBuyPrice) + 
+                        (totalQuantity * averagePrice)) / newTotalQuantity;
+                    
+                    await holding.update({
+                        quantity: newTotalQuantity,
+                        averageBuyPrice: newAveragePrice,
+                        latestPrice: trades.buys[0].tradePrice,
+                        gainLossPercentage: ((trades.buys[0].tradePrice - newAveragePrice) / newAveragePrice) * 100,
+                        holdingDuration: Math.floor((new Date(date) - new Date(holding.initialBuyDate)) / (1000 * 60 * 60 * 24)),
+                        isLongTerm: Math.floor((new Date(date) - new Date(holding.initialBuyDate)) / (1000 * 60 * 60 * 24)) > 3
+                    }, { transaction });
+                } else {
+                    // Create new holding
+                    await LongTermHolding.create({
+                        clientName,
+                        symbol,
+                        securityName: trades.buys[0].securityName,
+                        initialBuyDate: date,
+                        quantity: totalQuantity,
+                        averageBuyPrice: averagePrice,
+                        latestPrice: trades.buys[0].tradePrice,
+                        gainLossPercentage: 0,
+                        holdingDuration: 0,
+                        status: 'HOLDING'
+                    }, { transaction });
+                }
+            }
+
+            // Process sells
+            if (trades.sells.length > 0) {
+                const totalSellQuantity = trades.sells.reduce((sum, trade) => sum + trade.quantityTraded, 0);
+                const averageSellPrice = trades.sells.reduce((sum, trade) => 
+                    sum + (trade.quantityTraded * trade.tradePrice), 0) / totalSellQuantity;
+
+                // Find holding
+                const holding = await LongTermHolding.findOne({
+                    where: {
+                        clientName,
+                        symbol,
+                        status: 'HOLDING'
+                    },
+                    transaction
+                });
+
+                if (holding) {
+                    if (holding.quantity <= totalSellQuantity) {
+                        // Close position
+                        await holding.update({
+                            status: 'CLOSED',
+                            closedDate: date,
+                            closedPrice: averageSellPrice,
+                            gainLossPercentage: ((averageSellPrice - holding.averageBuyPrice) / holding.averageBuyPrice) * 100,
+                            holdingDuration: Math.floor((new Date(date) - new Date(holding.initialBuyDate)) / (1000 * 60 * 60 * 24))
+                        }, { transaction });
+                    } else {
+                        // Reduce position
+                        await holding.update({
+                            quantity: holding.quantity - totalSellQuantity,
+                            latestPrice: trades.sells[0].tradePrice,
+                            gainLossPercentage: ((trades.sells[0].tradePrice - holding.averageBuyPrice) / holding.averageBuyPrice) * 100
+                        }, { transaction });
+                    }
+                }
+            }
+        }
+    }
+}
 
 exports.uploadCSV = async (req, res) => {
     try {
@@ -200,6 +334,9 @@ exports.uploadCSV = async (req, res) => {
                     console.log(`Inserted ${i + chunk.length} of ${uniqueResults.length} records`);
                 }
             }
+
+            // After successful stock insert, update long-term holdings
+            await updateLongTermHoldings(transaction, uniqueResults);
 
             await transaction.commit();
             fs.unlinkSync(req.file.path);
@@ -380,6 +517,134 @@ exports.getFilters = async (req, res) => {
         console.error('Error fetching filters:', error);
         res.status(500).json({
             error: 'Error fetching filters',
+            details: error.message
+        });
+    }
+};
+
+exports.getLongTermHoldings = async (req, res) => {
+    try {
+        const showHistorical = req.query.historical === 'true';
+
+        // First, get the latest prices for all symbols
+        const latestPricesQuery = `
+            SELECT s1.symbol, s1.tradePrice as latest_price
+            FROM stocks s1
+            INNER JOIN (
+                SELECT symbol, MAX(date) as max_date
+                FROM stocks
+                GROUP BY symbol
+            ) s2 ON s1.symbol = s2.symbol AND s1.date = s2.max_date
+        `;
+        const [latestPrices] = await sequelize.query(latestPricesQuery);
+        const latestPriceMap = new Map(latestPrices.map(row => [row.symbol, row.latest_price]));
+
+        // Get all holdings
+        const holdings = await LongTermHolding.findAll({
+            where: {
+                status: showHistorical ? 'CLOSED' : 'HOLDING'
+            },
+            order: [
+                ['initialBuyDate', 'DESC']
+            ]
+        });
+
+        // Process each holding with proper gain/loss calculation
+        const processedHoldings = holdings.map(holding => {
+            const holdingData = holding.toJSON();
+            const latestPrice = latestPriceMap.get(holdingData.symbol) || 0;
+
+            // Calculate gain/loss percentage
+            if (holdingData.status === 'CLOSED') {
+                // For closed positions, use the actual closing price
+                holdingData.gainLossPercentage = ((holdingData.closedPrice - holdingData.averageBuyPrice) / holdingData.averageBuyPrice * 100).toFixed(2);
+            } else {
+                // For open positions, use the latest available price
+                holdingData.latestPrice = latestPrice;
+                holdingData.gainLossPercentage = ((latestPrice - holdingData.averageBuyPrice) / holdingData.averageBuyPrice * 100).toFixed(2);
+            }
+
+            // Format numeric values
+            holdingData.averageBuyPrice = Number(holdingData.averageBuyPrice).toFixed(2);
+            holdingData.latestPrice = holdingData.latestPrice ? Number(holdingData.latestPrice).toFixed(2) : null;
+            holdingData.closedPrice = holdingData.closedPrice ? Number(holdingData.closedPrice).toFixed(2) : null;
+
+            return holdingData;
+        });
+
+        res.json({
+            success: true,
+            data: processedHoldings
+        });
+    } catch (error) {
+        console.error('Error in getLongTermHoldings:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to retrieve long-term holdings',
+            details: error.message
+        });
+    }
+};
+
+// Add new endpoint to initialize long-term holdings
+exports.initializeLongTermHoldings = async (req, res) => {
+    const transaction = await sequelize.transaction();
+    try {
+        // Check if already initialized
+        const initStatus = await InitializationStatus.findOne({
+            where: { isInitialized: true }
+        });
+
+        if (initStatus) {
+            return res.status(400).json({
+                error: 'Long-term holdings already initialized',
+                initializedAt: initStatus.initializedAt
+            });
+        }
+
+        // First, clear existing long-term holdings (just in case)
+        await LongTermHolding.destroy({
+            where: {},
+            transaction
+        });
+
+        // Get all stocks up to yesterday (to avoid processing today's data)
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+        const stocks = await Stock.findAll({
+            where: {
+                date: {
+                    [Op.lte]: yesterdayStr
+                }
+            },
+            order: [['date', 'ASC']],
+            raw: true,
+            transaction
+        });
+
+        // Process them using the existing updateLongTermHoldings function
+        await updateLongTermHoldings(transaction, stocks);
+
+        // Mark as initialized
+        await InitializationStatus.create({
+            isInitialized: true,
+            initializedAt: new Date()
+        }, { transaction });
+
+        await transaction.commit();
+
+        res.status(200).json({
+            message: 'Long-term holdings initialized successfully',
+            processedCount: stocks.length,
+            initializedAt: new Date()
+        });
+    } catch (error) {
+        await transaction.rollback();
+        console.error('Error initializing long-term holdings:', error);
+        res.status(500).json({
+            error: 'Error initializing long-term holdings',
             details: error.message
         });
     }
