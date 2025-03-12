@@ -525,6 +525,8 @@ exports.getFilters = async (req, res) => {
 exports.getLongTermHoldings = async (req, res) => {
     try {
         const showHistorical = req.query.historical === 'true';
+        const page = parseInt(req.query.page) || 1;
+        const itemsPerPage = 10; // Fixed number of items per page
 
         // First, get the latest prices for all symbols
         const latestPricesQuery = `
@@ -539,14 +541,25 @@ exports.getLongTermHoldings = async (req, res) => {
         const [latestPrices] = await sequelize.query(latestPricesQuery);
         const latestPriceMap = new Map(latestPrices.map(row => [row.symbol, row.latest_price]));
 
-        // Get all holdings
+        // Get total count of holdings
+        const totalItems = await LongTermHolding.count({
+            where: {
+                status: showHistorical ? 'CLOSED' : 'HOLDING'
+            }
+        });
+
+        const totalPages = Math.ceil(totalItems / itemsPerPage);
+
+        // Get paginated holdings
         const holdings = await LongTermHolding.findAll({
             where: {
                 status: showHistorical ? 'CLOSED' : 'HOLDING'
             },
             order: [
                 ['initialBuyDate', 'DESC']
-            ]
+            ],
+            limit: itemsPerPage,
+            offset: (page - 1) * itemsPerPage
         });
 
         // Process each holding with proper gain/loss calculation
@@ -574,7 +587,13 @@ exports.getLongTermHoldings = async (req, res) => {
 
         res.json({
             success: true,
-            data: processedHoldings
+            currentPage: page,
+            totalPages: totalPages,
+            totalItems: totalItems,
+            itemsPerPage: itemsPerPage,
+            data: processedHoldings,
+            hasNextPage: page < totalPages,
+            hasPreviousPage: page > 1
         });
     } catch (error) {
         console.error('Error in getLongTermHoldings:', error);
