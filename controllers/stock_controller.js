@@ -526,7 +526,7 @@ exports.getLongTermHoldings = async (req, res) => {
     try {
         const showHistorical = req.query.historical === 'true';
         const page = parseInt(req.query.page) || 1;
-        const itemsPerPage = 10; // Fixed number of items per page
+        const itemsPerPage = 25; // Changed from 10 to 25 items per page
 
         // First, get the latest prices for all symbols
         const latestPricesQuery = `
