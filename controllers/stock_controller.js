@@ -620,11 +620,15 @@ exports.getLongTermHoldings = async (req, res) => {
             holdings = holdings.map(holding => {
                 const latestPrice = latestPriceMap.get(holding.symbol) || 0;
                 const gainLossPercentage = ((latestPrice - holding.averageBuyPrice) / holding.averageBuyPrice * 100);
+                const today = new Date();
+                const initialBuyDate = new Date(holding.initialBuyDate);
+                const holdingDuration = Math.floor((today - initialBuyDate) / (1000 * 60 * 60 * 24));
                 
                 return {
                     ...holding,
                     latestPrice: latestPrice,
-                    gainLossPercentage: gainLossPercentage
+                    gainLossPercentage: gainLossPercentage,
+                    holdingDuration: holdingDuration
                 };
             });
 
