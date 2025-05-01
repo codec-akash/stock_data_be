@@ -2,6 +2,7 @@ const express = require('express');
 const sequelize = require('./config/database');
 const stockRoutes = require('./routes/stock_routes');
 const userRoutes = require('./routes/user_routes');
+const stockController = require('./controllers/stock_controller');
 const fs = require('fs');
 const app = express();
 
@@ -19,6 +20,10 @@ async function initDatabase() {
         // Sync database (create tables if they don't exist)
         await sequelize.sync();
         console.log('Database synchronized successfully.');
+        
+        // Initialize database indexes for optimized queries
+        await stockController.initializeIndexes();
+        console.log('Database indexes initialized successfully.');
     } catch (error) {
         console.error('Unable to connect to the database:', error);
     }

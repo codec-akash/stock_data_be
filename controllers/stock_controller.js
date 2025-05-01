@@ -7,6 +7,7 @@ const { Op } = require('sequelize');
 const e = require('express');
 const express = require('express');
 const app = express();
+const investorService = require('../services/investor_service');
 
 // Add these configurations before routes
 app.use(express.json({ limit: '10mb' }));
@@ -47,6 +48,9 @@ async function updateLongTermHoldings(transaction, newStocks) {
         acc[date].push(stock);
         return acc;
     }, {});
+
+    // Track if any long-term holding was closed or modified
+    let holdingsChanged = false;
 
     // Process each date in chronological order
     const dates = Object.keys(stocksByDate).sort();
@@ -128,6 +132,14 @@ async function updateLongTermHoldings(transaction, newStocks) {
                         status: 'HOLDING'
                     }, { transaction });
                 }
+
+                // Check if this is a long-term holding update
+                const holdingDuration = Math.floor((new Date(date) - new Date(holding?.initialBuyDate || date)) / (1000 * 60 * 60 * 24));
+                const isLongTerm = holdingDuration > 3;
+                
+                if (isLongTerm) {
+                    holdingsChanged = true;
+                }
             }
 
             // Process sells
@@ -164,8 +176,30 @@ async function updateLongTermHoldings(transaction, newStocks) {
                             gainLossPercentage: ((trades.sells[0].tradePrice - holding.averageBuyPrice) / holding.averageBuyPrice) * 100
                         }, { transaction });
                     }
+
+                    // If we're closing or updating a long-term holding, flag for recalculation
+                    if (holding?.isLongTerm) {
+                        holdingsChanged = true;
+                    }
                 }
             }
+        }
+    }
+
+    // If any long-term holdings were changed, invalidate cache
+    if (holdingsChanged) {
+        try {
+            // Invalidate the cache first
+            investorService.invalidateCache();
+            
+            // Then trigger a recalculation (async, non-blocking)
+            setTimeout(() => {
+                investorService.getTopInvestors(true).catch(err => {
+                    console.error('Error recalculating top investors:', err);
+                });
+            }, 0);
+        } catch (error) {
+            console.error('Error triggering top investors recalculation:', error);
         }
     }
 }
@@ -749,6 +783,51 @@ exports.initializeLongTermHoldings = async (req, res) => {
         console.error('Error initializing long-term holdings:', error);
         res.status(500).json({
             error: 'Error initializing long-term holdings',
+            details: error.message
+        });
+    }
+};
+
+// Add this new controller method
+exports.getTopInvestors = async (req, res) => {
+    try {
+        const topInvestors = await investorService.getTopInvestors();
+        
+        return res.status(200).json({
+            message: 'Top investors retrieved successfully',
+            data: topInvestors
+        });
+    } catch (error) {
+        console.error('Error retrieving top investors:', error);
+        return res.status(500).json({
+            error: 'Failed to retrieve top investors',
+            details: error.message
+        });
+    }
+};
+
+// Initialize indexes when server starts - call this in the initDatabase function
+exports.initializeIndexes = async () => {
+    try {
+        await investorService.createIndex();
+    } catch (error) {
+        console.error('Error initializing indexes:', error);
+    }
+};
+
+// Add a controller method to refresh top investors cache
+exports.refreshTopInvestorsCache = async (req, res) => {
+    try {
+        // Force a refresh of the cache
+        await investorService.getTopInvestors(true);
+        
+        return res.status(200).json({
+            message: 'Top investors cache refreshed successfully'
+        });
+    } catch (error) {
+        console.error('Error refreshing top investors cache:', error);
+        return res.status(500).json({
+            error: 'Failed to refresh top investors cache',
             details: error.message
         });
     }

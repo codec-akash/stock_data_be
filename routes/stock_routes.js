@@ -56,4 +56,10 @@ router.get('/long-term-holdings', stockController.getLongTermHoldings);
 // Add route to initialize long-term holdings from existing stocks
 router.post('/initialize-long-term-holdings', stockController.initializeLongTermHoldings);
 
+// Add new route for top investors
+router.get('/top-investors', stockController.getTopInvestors);
+
+// Add route to manually refresh top investors cache
+router.post('/top-investors/refresh', stockController.refreshTopInvestorsCache);
+
 module.exports = router;
