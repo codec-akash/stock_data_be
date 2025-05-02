@@ -2,6 +2,7 @@ const express = require('express');
 const sequelize = require('./config/database');
 const stockRoutes = require('./routes/stock_routes');
 const userRoutes = require('./routes/user_routes');
+const investorRoutes = require('./routes/investor_routes');
 const stockController = require('./controllers/stock_controller');
 const fs = require('fs');
 const app = express();
@@ -42,6 +43,7 @@ app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 // Routes
 app.use('/api/stocks', stockRoutes);
 app.use('/api/user', userRoutes);
+app.use('/api/investor', investorRoutes);
 
 // 404 handler for routes that don't exist
 app.use((req, res) => {
