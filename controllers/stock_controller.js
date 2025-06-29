@@ -560,7 +560,6 @@ exports.getLongTermHoldings = async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const itemsPerPage = 25;
-        const profitType = req.query.profitType;
 
         // Get the latest prices for all symbols
         const latestPricesQuery = `
@@ -602,27 +601,14 @@ exports.getLongTermHoldings = async (req, res) => {
             };
         });
 
-        // Apply profit type filter if specified
-        if (profitType) {
-            holdings = holdings.filter(holding => 
-                profitType === 'positive' ? holding.gainLossPercentage >= 0 : holding.gainLossPercentage < 0
-            );
-        }
+        // Sort by date (most recent first) - latest to oldest
+        holdings.sort((a, b) => {
+            const dateA = new Date(a.initialBuyDate);
+            const dateB = new Date(b.initialBuyDate);
+            return dateB - dateA; // Descending order (newest first)
+        });
 
-        // Apply sorting based on the presence of profitType
-        if (profitType) {
-            // Sort by profit/loss percentage (highest first)
-            holdings.sort((a, b) => b.gainLossPercentage - a.gainLossPercentage);
-        } else {
-            // Sort by date (most recent first)
-            holdings.sort((a, b) => {
-                const dateA = new Date(a.initialBuyDate);
-                const dateB = new Date(b.initialBuyDate);
-                return dateB - dateA; // Descending order (newest first)
-            });
-        }
-
-        // Get total count after filtering
+        // Get total count
         const totalItems = holdings.length;
         const totalPages = Math.ceil(totalItems / itemsPerPage);
 
@@ -645,10 +631,7 @@ exports.getLongTermHoldings = async (req, res) => {
             itemsPerPage: itemsPerPage,
             data: holdings,
             hasNextPage: page < totalPages,
-            hasPreviousPage: page > 1,
-            appliedFilters: {
-                profitType
-            }
+            hasPreviousPage: page > 1
         });
     } catch (error) {
         console.error('Error in getLongTermHoldings:', error);
