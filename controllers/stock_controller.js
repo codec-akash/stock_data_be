@@ -558,14 +558,10 @@ exports.getFilters = async (req, res) => {
 
 exports.getLongTermHoldings = async (req, res) => {
     try {
-        const showHistorical = req.query.historical === 'true';
         const page = parseInt(req.query.page) || 1;
         const itemsPerPage = 25;
-        const profitType = req.query.profitType;
-        const sortOrder = req.query.sortOrder || 'highest';
-        const sortType = req.query.sortType || 'overall';
 
-        // First, get the latest prices for all symbols
+        // Get the latest prices for all symbols
         const latestPricesQuery = `
             SELECT s1.symbol, s1.tradePrice as latest_price
             FROM stocks s1
@@ -578,125 +574,54 @@ exports.getLongTermHoldings = async (req, res) => {
         const [latestPrices] = await sequelize.query(latestPricesQuery);
         const latestPriceMap = new Map(latestPrices.map(row => [row.symbol, row.latest_price]));
 
-        // Base where clause
+        // Get current holdings
         const whereClause = {
-            status: showHistorical ? 'CLOSED' : 'HOLDING'
+            status: 'HOLDING'
         };
 
-        let holdings;
-        let totalItems;
+        // Get all current holdings
+        let holdings = await LongTermHolding.findAll({
+            where: whereClause,
+            raw: true
+        });
 
-        if (showHistorical) {
-            // For historical data
-            if (profitType) {
-                whereClause.gainLossPercentage = profitType === 'positive' 
-                    ? { [Op.gte]: 0 } 
-                    : { [Op.lt]: 0 };
-            }
-
-            if (sortType === 'monthly') {
-                // For historical data, group by closedDate month
-                holdings = await LongTermHolding.findAll({
-                    where: whereClause,
-                    order: [
-                        ['closedDate', 'DESC'],
-                        ['gainLossPercentage', sortOrder === 'highest' ? 'DESC' : 'ASC']
-                    ],
-                    raw: true
-                });
-
-                // Group by month and apply pagination
-                const groupedHoldings = holdings.reduce((acc, holding) => {
-                    const month = new Date(holding.closedDate).toISOString().slice(0, 7);
-                    if (!acc[month]) acc[month] = [];
-                    acc[month].push(holding);
-                    return acc;
-                }, {});
-
-                // Flatten grouped results for pagination
-                holdings = Object.values(groupedHoldings)
-                    .flat()
-                    .slice((page - 1) * itemsPerPage, page * itemsPerPage);
-
-                totalItems = holdings.length;
-            } else {
-                // Overall sorting for historical data
-                totalItems = await LongTermHolding.count({
-                    where: whereClause
-                });
-
-                holdings = await LongTermHolding.findAll({
-                    where: whereClause,
-                    order: [['gainLossPercentage', sortOrder === 'highest' ? 'DESC' : 'ASC']],
-                    limit: itemsPerPage,
-                    offset: (page - 1) * itemsPerPage,
-                    raw: true
-                });
-            }
-
-            // Process historical holdings
-            holdings = holdings.map(holding => {
-                holding.gainLossPercentage = ((holding.closedPrice - holding.averageBuyPrice) / holding.averageBuyPrice * 100).toFixed(2);
-                holding.averageBuyPrice = Number(holding.averageBuyPrice).toFixed(2);
-                holding.closedPrice = Number(holding.closedPrice).toFixed(2);
-                holding.latestPrice = null;
-                return holding;
-            });
-        } else {
-            // For current holdings
-            // First get all current holdings
-            holdings = await LongTermHolding.findAll({
-                where: whereClause,
-                raw: true
-            });
-
-            // Calculate current gain/loss for all holdings
-            holdings = holdings.map(holding => {
-                const latestPrice = latestPriceMap.get(holding.symbol) || 0;
-                const gainLossPercentage = ((latestPrice - holding.averageBuyPrice) / holding.averageBuyPrice * 100);
-                const today = new Date();
-                const initialBuyDate = new Date(holding.initialBuyDate);
-                const holdingDuration = Math.floor((today - initialBuyDate) / (1000 * 60 * 60 * 24));
-                
-                return {
-                    ...holding,
-                    latestPrice: latestPrice,
-                    gainLossPercentage: gainLossPercentage,
-                    holdingDuration: holdingDuration
-                };
-            });
-
-            // Apply profit type filter
-            if (profitType) {
-                holdings = holdings.filter(holding => 
-                    profitType === 'positive' ? holding.gainLossPercentage >= 0 : holding.gainLossPercentage < 0
-                );
-            }
-
-            // Sort by gain/loss
-            holdings.sort((a, b) => {
-                return sortOrder === 'highest' 
-                    ? b.gainLossPercentage - a.gainLossPercentage
-                    : a.gainLossPercentage - b.gainLossPercentage;
-            });
-
-            // Get total count after filtering
-            totalItems = holdings.length;
-
-            // Apply pagination
-            holdings = holdings.slice((page - 1) * itemsPerPage, page * itemsPerPage);
-
-            // Format numbers
-            holdings = holdings.map(holding => ({
+        // Calculate current gain/loss for all holdings
+        holdings = holdings.map(holding => {
+            const latestPrice = latestPriceMap.get(holding.symbol) || 0;
+            const gainLossPercentage = ((latestPrice - holding.averageBuyPrice) / holding.averageBuyPrice * 100);
+            const today = new Date();
+            const initialBuyDate = new Date(holding.initialBuyDate);
+            const holdingDuration = Math.floor((today - initialBuyDate) / (1000 * 60 * 60 * 24));
+            
+            return {
                 ...holding,
-                gainLossPercentage: holding.gainLossPercentage.toFixed(2),
-                averageBuyPrice: Number(holding.averageBuyPrice).toFixed(2),
-                latestPrice: Number(holding.latestPrice).toFixed(2),
-                closedPrice: null
-            }));
-        }
+                latestPrice: latestPrice,
+                gainLossPercentage: gainLossPercentage,
+                holdingDuration: holdingDuration
+            };
+        });
 
+        // Sort by date (most recent first) - latest to oldest
+        holdings.sort((a, b) => {
+            const dateA = new Date(a.initialBuyDate);
+            const dateB = new Date(b.initialBuyDate);
+            return dateB - dateA; // Descending order (newest first)
+        });
+
+        // Get total count
+        const totalItems = holdings.length;
         const totalPages = Math.ceil(totalItems / itemsPerPage);
+
+        // Apply pagination
+        holdings = holdings.slice((page - 1) * itemsPerPage, page * itemsPerPage);
+
+        // Format numbers
+        holdings = holdings.map(holding => ({
+            ...holding,
+            gainLossPercentage: holding.gainLossPercentage.toFixed(2),
+            averageBuyPrice: Number(holding.averageBuyPrice).toFixed(2),
+            latestPrice: Number(holding.latestPrice).toFixed(2)
+        }));
 
         res.json({
             success: true,
@@ -706,13 +631,7 @@ exports.getLongTermHoldings = async (req, res) => {
             itemsPerPage: itemsPerPage,
             data: holdings,
             hasNextPage: page < totalPages,
-            hasPreviousPage: page > 1,
-            appliedFilters: {
-                historical: showHistorical,
-                profitType,
-                sortOrder,
-                sortType
-            }
+            hasPreviousPage: page > 1
         });
     } catch (error) {
         console.error('Error in getLongTermHoldings:', error);
